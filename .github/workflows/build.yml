@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: debian:bookworm
-      options: --privileged
+      options: --privileged  # CRITICAL: Allows systemd-nspawn to work
 
     steps:
       - name: Checkout Code
@@ -19,14 +19,34 @@ jobs:
           apt-get update
           apt-get install -y git libglib2.0-dev libostree-dev qemu-system-x86 qemu-user-static debootstrap libyaml-dev binfmt-support wget unzip debos
 
+      - name: Setup Debos Wrapper (The Fix)
+        run: |
+          # 1. Find where debos is installed
+          DEBOS_PATH=$(which debos)
+          
+          # 2. Rename the real debos
+          mv $DEBOS_PATH ${DEBOS_PATH}-original
+          
+          # 3. Create a wrapper that forces the flag
+          echo '#!/bin/bash' > $DEBOS_PATH
+          echo "${DEBOS_PATH}-original --disable-fakemachine \"\$@\"" >> $DEBOS_PATH
+          
+          # 4. Make it executable
+          chmod +x $DEBOS_PATH
+          
+          # Verify it works
+          debos --help
+
       - name: Clone Mobian Recipes
         run: |
           git clone https://salsa.debian.org/Mobian-team/mobian-recipes.git
-          
-      - name: Configure Device (Miatoll)
+
+      - name: Configure Device (Hijack Librem 5)
         run: |
-          mkdir -p mobian-recipes/devices/miatoll
-          cat <<EOF > mobian-recipes/devices/miatoll/device.toml
+          # We hijack the 'librem5' config because we know the build script accepts it.
+          # We overwrite it with your Redmi Note 9 Pro Max settings.
+          
+          cat <<EOF > mobian-recipes/devices/librem5/device.toml
           name = "Xiaomi Redmi Note 9 Pro Max"
           arch = "arm64"
           image_format = "android-sparse"
@@ -37,17 +57,17 @@ jobs:
           cmdline = "console=ttyMSM0,115200 loglevel=7"
           EOF
 
-      - name: Inject Kernel (Hijack Method)
+      - name: Inject Kernel
         run: |
+          # Create the overlay folder
           mkdir -p mobian-recipes/overlays/my-kernel/var/tmp/
           
-          # Copy your kernel from the repo to the overlay
+          # Copy your kernel file
           cp kernel.deb mobian-recipes/overlays/my-kernel/var/tmp/
           
-          # Find the recipe file (rootfs.yaml or common.yaml)
+          # Patch the recipe (rootfs.yaml or common.yaml)
           TARGET=$(find mobian-recipes -name "rootfs.yaml" -o -name "common.yaml" | head -n 1)
           
-          # Append instructions to install the kernel
           cat <<EOF >> $TARGET
             - action: overlay
               source: overlays/my-kernel
@@ -61,12 +81,9 @@ jobs:
       - name: Run Build
         working-directory: mobian-recipes
         run: |
-          # FIX: We use 'sed' to edit the script instead of passing an illegal flag
-          # This forces debos to run without fakemachine (required for GitHub Actions)
-          sed -i 's/debos/debos --disable-fakemachine/g' build.sh
-          
-          # Now run the script normally
-          ./build.sh -t miatoll -e plasma-mobile
+          # We run the build for 'librem5' (which is actually your Redmi config now)
+          # The wrapper will automatically add --disable-fakemachine
+          ./build.sh -t librem5 -e plasma-mobile
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
