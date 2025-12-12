@@ -1,0 +1,81 @@
+name: Build Mobian Miatoll
+
+on:
+  workflow_dispatch: # Allows you to click a button to start the build
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    # This gives the builder 'Root' permissions that Colab blocked
+    container:
+      image: debian:bookworm
+      options: --privileged
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Build Tools
+        run: |
+          apt-get update
+          apt-get install -y git libglib2.0-dev libostree-dev qemu-system-x86 qemu-user-static debootstrap libyaml-dev binfmt-support wget unzip
+          
+          # Install debos from Go
+          wget -q https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
+          tar -C /usr/local -xzf go1.21.6.linux-amd64.tar.gz
+          export PATH=$PATH:/usr/local/go/bin
+          go install github.com/go-debos/debos/cmd/debos@latest
+          cp /root/go/bin/debos /usr/local/bin/debos
+
+      - name: Clone Mobian Recipes
+        run: |
+          git clone https://salsa.debian.org/Mobian-team/mobian-recipes.git
+          
+      - name: Configure Device (Miatoll)
+        run: |
+          mkdir -p mobian-recipes/devices/miatoll
+          cat <<EOF > mobian-recipes/devices/miatoll/device.toml
+          name = "Xiaomi Redmi Note 9 Pro Max"
+          arch = "arm64"
+          image_format = "android-sparse"
+          kernel_package = "linux-image-6.14.7-sm7125"
+          u_boot_package = "u-boot-menu"
+          
+          [boot]
+          cmdline = "console=ttyMSM0,115200 loglevel=7"
+          EOF
+
+      - name: Inject Kernel (Hijack Method)
+        run: |
+          # Create the overlay folder
+          mkdir -p mobian-recipes/overlays/my-kernel/var/tmp/
+          
+          # Copy your kernel from the repo to the overlay
+          cp kernel.deb mobian-recipes/overlays/my-kernel/var/tmp/
+          
+          # Patch the recipe to install it
+          # We find rootfs.yaml and append the install command
+          TARGET=$(find mobian-recipes -name "rootfs.yaml" | head -n 1)
+          cat <<EOF >> $TARGET
+            - action: overlay
+              source: overlays/my-kernel
+          
+            - action: run
+              description: Install Custom Kernel
+              chroot: true
+              command: dpkg -i /var/tmp/kernel.deb && rm /var/tmp/kernel.deb
+          EOF
+
+      - name: Run Build
+        working-directory: mobian-recipes
+        run: |
+          # We disable fakemachine because GitHub Actions is already a VM
+          ./build.sh -t miatoll -e plasma-mobile --disable-fakemachine
+
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobian-miatoll-plasma
+          path: |
+            mobian-recipes/*.img
+            mobian-recipes/*.tar.gz
