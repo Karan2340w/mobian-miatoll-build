@@ -1,12 +1,11 @@
 name: Build Mobian Miatoll
 
 on:
-  workflow_dispatch: # Allows you to click a button to start the build
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    # We use the official Debian container with Root privileges
     container:
       image: debian:bookworm
       options: --privileged
@@ -18,7 +17,6 @@ jobs:
       - name: Install Build Tools
         run: |
           apt-get update
-          # FIX: We install 'debos' directly from apt. No compilation needed.
           apt-get install -y git libglib2.0-dev libostree-dev qemu-system-x86 qemu-user-static debootstrap libyaml-dev binfmt-support wget unzip debos
 
       - name: Clone Mobian Recipes
@@ -41,16 +39,15 @@ jobs:
 
       - name: Inject Kernel (Hijack Method)
         run: |
-          # Create the overlay folder
           mkdir -p mobian-recipes/overlays/my-kernel/var/tmp/
           
           # Copy your kernel from the repo to the overlay
-          # We look for the file named 'kernel.deb' that you uploaded
           cp kernel.deb mobian-recipes/overlays/my-kernel/var/tmp/
           
-          # Patch the recipe to install it
-          # We find rootfs.yaml and append the install command
-          TARGET=$(find mobian-recipes -name "rootfs.yaml" | head -n 1)
+          # Find the recipe file (rootfs.yaml or common.yaml)
+          TARGET=$(find mobian-recipes -name "rootfs.yaml" -o -name "common.yaml" | head -n 1)
+          
+          # Append instructions to install the kernel
           cat <<EOF >> $TARGET
             - action: overlay
               source: overlays/my-kernel
@@ -64,8 +61,12 @@ jobs:
       - name: Run Build
         working-directory: mobian-recipes
         run: |
-          # We disable fakemachine because we are already in a privileged container
-          ./build.sh -t miatoll -e plasma-mobile --disable-fakemachine
+          # FIX: We use 'sed' to edit the script instead of passing an illegal flag
+          # This forces debos to run without fakemachine (required for GitHub Actions)
+          sed -i 's/debos/debos --disable-fakemachine/g' build.sh
+          
+          # Now run the script normally
+          ./build.sh -t miatoll -e plasma-mobile
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
