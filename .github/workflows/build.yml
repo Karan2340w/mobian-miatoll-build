@@ -5,26 +5,41 @@ on:
 
 jobs:
   build:
-    # 1. RUN ON HOST (Ubuntu 24.04 VM)
-    #    This removes the 'container' layer, giving us full kernel access.
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. SETUP QEMU (Fixes Exec Format Error)
-      #    Registers the ARM64 translator on the Host kernel.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # 3. INSTALL TOOLS ON HOST
-      #    We install debos and dependencies directly on the VM.
       - name: Install Build Tools
         run: |
           sudo apt-get update
-          # Ubuntu 24.04 has a modern version of debos in the official repo
           sudo apt-get install -y debos git libglib2.0-dev libostree-dev qemu-system-x86 qemu-user-static debootstrap libyaml-dev binfmt-support systemd-container wget unzip
+
+      # THE CRITICAL FIX: SILENT WRAPPER
+      # We replace the real 'debos' command with a wrapper that forces the flag.
+      # This way, we don't have to pass the flag to build.sh (which causes the crash).
+      - name: Setup Debos Wrapper
+        run: |
+          # Find the real debos
+          DEBOS_BIN=$(which debos)
+          
+          # Rename it
+          sudo mv $DEBOS_BIN ${DEBOS_BIN}-original
+          
+          # Create the wrapper script
+          # It silently adds --disable-fakemachine to every command
+          echo '#!/bin/bash' | sudo tee $DEBOS_BIN
+          echo "${DEBOS_BIN}-original --disable-fakemachine \"\$@\"" | sudo tee -a $DEBOS_BIN
+          
+          # Make executable
+          sudo chmod +x $DEBOS_BIN
+          
+          # Verify it works (should show help without errors)
+          debos --help
 
       - name: Clone Mobian Recipes
         run: |
@@ -32,9 +47,7 @@ jobs:
 
       - name: Configure Device (Hijack Librem 5)
         run: |
-          # We overwrite the Librem 5 config with your Redmi settings.
-          # We use 'sudo' to ensure file permissions are correct.
-          
+          # Overwrite Librem 5 config with Redmi Note 9 Pro Max settings
           mkdir -p mobian-recipes/devices/librem5
           
           cat <<EOF | sudo tee mobian-recipes/devices/librem5/device.toml
@@ -51,11 +64,8 @@ jobs:
       - name: Inject Kernel
         run: |
           mkdir -p mobian-recipes/overlays/my-kernel/var/tmp/
-          
-          # Copy your kernel.deb
           cp kernel.deb mobian-recipes/overlays/my-kernel/var/tmp/
           
-          # Patch the recipe to install it
           TARGET=$(find mobian-recipes -name "rootfs.yaml" -o -name "common.yaml" | head -n 1)
           
           cat <<EOF | sudo tee -a $TARGET
@@ -71,10 +81,9 @@ jobs:
       - name: Run Build
         working-directory: mobian-recipes
         run: |
-          # 4. START THE BUILD
-          #    We use 'sudo' because creating filesystems requires root.
-          #    We disable fakemachine because we are already root on a VM.
-          sudo ./build.sh -t librem5 -e plasma-mobile --disable-fakemachine
+          # WE REMOVED THE FLAG HERE.
+          # The wrapper (Step 4) handles it internally now.
+          sudo ./build.sh -t librem5 -e plasma-mobile
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
