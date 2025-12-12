@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    # This gives the builder 'Root' permissions that Colab blocked
+    # We use the official Debian container with Root privileges
     container:
       image: debian:bookworm
       options: --privileged
@@ -18,14 +18,8 @@ jobs:
       - name: Install Build Tools
         run: |
           apt-get update
-          apt-get install -y git libglib2.0-dev libostree-dev qemu-system-x86 qemu-user-static debootstrap libyaml-dev binfmt-support wget unzip
-          
-          # Install debos from Go
-          wget -q https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
-          tar -C /usr/local -xzf go1.21.6.linux-amd64.tar.gz
-          export PATH=$PATH:/usr/local/go/bin
-          go install github.com/go-debos/debos/cmd/debos@latest
-          cp /root/go/bin/debos /usr/local/bin/debos
+          # FIX: We install 'debos' directly from apt. No compilation needed.
+          apt-get install -y git libglib2.0-dev libostree-dev qemu-system-x86 qemu-user-static debootstrap libyaml-dev binfmt-support wget unzip debos
 
       - name: Clone Mobian Recipes
         run: |
@@ -51,6 +45,7 @@ jobs:
           mkdir -p mobian-recipes/overlays/my-kernel/var/tmp/
           
           # Copy your kernel from the repo to the overlay
+          # We look for the file named 'kernel.deb' that you uploaded
           cp kernel.deb mobian-recipes/overlays/my-kernel/var/tmp/
           
           # Patch the recipe to install it
@@ -69,7 +64,7 @@ jobs:
       - name: Run Build
         working-directory: mobian-recipes
         run: |
-          # We disable fakemachine because GitHub Actions is already a VM
+          # We disable fakemachine because we are already in a privileged container
           ./build.sh -t miatoll -e plasma-mobile --disable-fakemachine
 
       - name: Upload Image
