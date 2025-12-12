@@ -5,48 +5,39 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    container:
-      image: debian:bookworm
-      options: --privileged  # CRITICAL: Allows systemd-nspawn to work
+    runs-on: ubuntu-22.04  # Run on the Host machine (not inside a container yet)
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Build Tools
+      # 1. THE FIX: Register QEMU on the Host Kernel
+      # This allows the machine to run ARM64 (Phone) code without the "Exec format error"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 2. PREPARE THE BUILD SCRIPT
+      # We create a script on the host that we will later run inside Docker
+      - name: Create Build Script
         run: |
+          cat <<'EOF' > run_build.sh
+          #!/bin/bash
+          set -e
+          
+          # Install Dependencies inside the container
+          echo ">>> Installing Build Tools..."
           apt-get update
           apt-get install -y git libglib2.0-dev libostree-dev qemu-system-x86 qemu-user-static debootstrap libyaml-dev binfmt-support wget unzip debos
 
-      - name: Setup Debos Wrapper (The Fix)
-        run: |
-          # 1. Find where debos is installed
-          DEBOS_PATH=$(which debos)
-          
-          # 2. Rename the real debos
-          mv $DEBOS_PATH ${DEBOS_PATH}-original
-          
-          # 3. Create a wrapper that forces the flag
-          echo '#!/bin/bash' > $DEBOS_PATH
-          echo "${DEBOS_PATH}-original --disable-fakemachine \"\$@\"" >> $DEBOS_PATH
-          
-          # 4. Make it executable
-          chmod +x $DEBOS_PATH
-          
-          # Verify it works
-          debos --help
-
-      - name: Clone Mobian Recipes
-        run: |
+          # Clone Recipes
+          echo ">>> Cloning Mobian Recipes..."
           git clone https://salsa.debian.org/Mobian-team/mobian-recipes.git
+          cd mobian-recipes
 
-      - name: Configure Device (Hijack Librem 5)
-        run: |
-          # We hijack the 'librem5' config because we know the build script accepts it.
-          # We overwrite it with your Redmi Note 9 Pro Max settings.
-          
-          cat <<EOF > mobian-recipes/devices/librem5/device.toml
+          # Configure Device (Hijack Librem 5)
+          echo ">>> Configuring Device..."
+          mkdir -p devices/librem5
+          cat <<TOML > devices/librem5/device.toml
           name = "Xiaomi Redmi Note 9 Pro Max"
           arch = "arm64"
           image_format = "android-sparse"
@@ -55,20 +46,16 @@ jobs:
           
           [boot]
           cmdline = "console=ttyMSM0,115200 loglevel=7"
-          EOF
+          TOML
 
-      - name: Inject Kernel
-        run: |
-          # Create the overlay folder
-          mkdir -p mobian-recipes/overlays/my-kernel/var/tmp/
+          # Inject Kernel
+          echo ">>> Injecting Kernel..."
+          mkdir -p overlays/my-kernel/var/tmp/
+          cp /workspace/kernel.deb overlays/my-kernel/var/tmp/
           
-          # Copy your kernel file
-          cp kernel.deb mobian-recipes/overlays/my-kernel/var/tmp/
-          
-          # Patch the recipe (rootfs.yaml or common.yaml)
-          TARGET=$(find mobian-recipes -name "rootfs.yaml" -o -name "common.yaml" | head -n 1)
-          
-          cat <<EOF >> $TARGET
+          # Patch Recipe
+          TARGET=$(find . -name "rootfs.yaml" -o -name "common.yaml" | head -n 1)
+          cat <<YAML >> $TARGET
             - action: overlay
               source: overlays/my-kernel
           
@@ -76,15 +63,33 @@ jobs:
               description: Install Custom Kernel
               chroot: true
               command: dpkg -i /var/tmp/kernel.deb && rm /var/tmp/kernel.deb
-          EOF
+          YAML
 
-      - name: Run Build
-        working-directory: mobian-recipes
-        run: |
-          # We run the build for 'librem5' (which is actually your Redmi config now)
-          # The wrapper will automatically add --disable-fakemachine
+          # Apply Wrapper to force --disable-fakemachine
+          echo ">>> Applying Fakemachine Bypass..."
+          DEBOS_BIN=$(which debos)
+          mv $DEBOS_BIN ${DEBOS_BIN}-original
+          echo '#!/bin/bash' > $DEBOS_BIN
+          echo "${DEBOS_BIN}-original --disable-fakemachine \"\$@\"" >> $DEBOS_BIN
+          chmod +x $DEBOS_BIN
+
+          # Run Build
+          echo ">>> STARTING BUILD..."
           ./build.sh -t librem5 -e plasma-mobile
+          EOF
+          
+          chmod +x run_build.sh
 
+      # 3. RUN THE BUILD INSIDE DOCKER
+      # We mount the current folder to /workspace so it can access your kernel.deb
+      - name: Execute Build in Docker
+        run: |
+          docker run --privileged --rm \
+            -v ${{ github.workspace }}:/workspace \
+            debian:bookworm \
+            /workspace/run_build.sh
+
+      # 4. UPLOAD ARTIFACTS
       - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
